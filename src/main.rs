@@ -1,15 +1,24 @@
 use error::Error;
-use token::{Symbol, Token, TokenKind};
-use scanner::ScanError;
+use scanner::Scanner;
+use token::TokenKind;
 
 mod error;
-mod token;
 mod scanner;
+mod token;
 
 fn main() -> Result<(), Error> {
-    println!("Hello, world!");
-    println!("{:?}", Token::new(TokenKind::Symbol(Symbol::Comma)));
-    Err(ScanError::UnexpectedEndOfInput(12))?;
-    println!("Goodbye, world!");
+    let input = r#"""main :: Integer;
+     main = 1_000_000;
+     test :: String;
+     test = "hallo world"
+     """#;
+    let mut scanner = Scanner::new(input)?;
+    loop {
+        println!("{:?}", scanner.token());
+        if scanner.token().kind() == TokenKind::Eof {
+            break;
+        }
+        scanner.scan()?;
+    }
     Ok(())
 }

@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-// #[allow(dead_code)]
 pub enum Symbol {
     Eq,
     EqEq,
@@ -9,19 +8,32 @@ pub enum Symbol {
     Colon,
     DoubleColon,
     Semicolon,
+    Backslash,
+    Arrow,
+    Dot,
+    Plus,
+    Minus,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-// #[allow(dead_code)]
+pub enum Keyword {
+    If,
+    Else,
+    End,
+    Fun,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum TokenKind {
     Eof,
     Identifier,
     Number,
     Symbol(Symbol),
     String,
+    Keyword(Keyword),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 // #[allow(dead_code)]
 pub struct Token<'src> {
     pub(crate) kind: TokenKind,
@@ -61,5 +73,10 @@ impl<'src> Token<'src> {
     #[allow(dead_code)]
     pub fn text(&self) -> &str {
         self.text.as_ref()
+    }
+    
+    #[allow(dead_code)]
+    pub fn raw_text(&self) -> &str {
+        self.raw_text
     }
 }

@@ -1,6 +1,6 @@
-use std::str::CharIndices;
+use std::{borrow::Cow, str::CharIndices};
 
-use crate::token::{Symbol, Token, TokenKind};
+use crate::token::{Keyword, Symbol, Token, TokenKind};
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -28,12 +28,16 @@ impl std::fmt::Display for ScanError {
                 write!(f, "unexpected end of input at offset {offset} in string starting at {string_start}")
             }
             ScanError::UnexpectedCharacterInEscapeSequence { offset, unexpected } => {
-                write!(f, "unexpected character {unexpected:?} in escape sequence at offset {offset}")
+                write!(
+                    f,
+                    "unexpected character {unexpected:?} in escape sequence at offset {offset}"
+                )
             }
-            ScanError::UnexpectedEndOfInputInEscapeSequence {
-                offset
-            } => {
-                write!(f, "unexpected end of input at offset {offset} in escape sequence")
+            ScanError::UnexpectedEndOfInputInEscapeSequence { offset } => {
+                write!(
+                    f,
+                    "unexpected end of input at offset {offset} in escape sequence"
+                )
             }
         }
     }
@@ -97,14 +101,36 @@ impl<'src> Scanner<'src> {
     where
         F: Fn(&mut Token) -> Result<(), ScanError>,
     {
-        self.token.kind = kind;
-        self.token.end = self.position;
-        self.token.raw_text = &self.input[self.token.start..self.token.end];
-        self.token.text = self.token.raw_text.into();
+        self.finish_token(kind)?;
         modifier(&mut self.token)
     }
 
-    fn scan_identifier(&mut self) -> Result<(), ScanError> {
+    fn finish_token_with_text(
+        &mut self,
+        kind: TokenKind,
+        text: Option<String>,
+    ) -> Result<(), ScanError> {
+        self.finish_token(kind)?;
+        if let Some(s) = text {
+            self.token.text = Cow::from(s);
+        }
+        Ok(())
+    }
+
+    fn scan_identifier_or_keyword(&mut self) -> Result<(), ScanError> {
+        let finish = |scanner: &mut Scanner| -> Result<(), ScanError> {
+            scanner.finish_token(TokenKind::Identifier)?;
+            if let Some(kw) = match scanner.token.raw_text {
+                "if" => Some(Keyword::If),
+                "else" => Some(Keyword::Else),
+                "end" => Some(Keyword::End),
+                "fun" => Some(Keyword::Fun),
+                _ => None,
+            } {
+                scanner.token.kind = TokenKind::Keyword(kw);
+            }
+            Ok(())
+        };
         self.scan_char()?;
         while let Some(ch) = self.current_char {
             match ch {
@@ -112,7 +138,7 @@ impl<'src> Scanner<'src> {
                     self.scan_char()?;
                 }
                 _ => {
-                    return self.finish_token(TokenKind::Identifier);
+                    return finish(self);
                 }
             }
         }
@@ -163,24 +189,42 @@ impl<'src> Scanner<'src> {
     }
 
     fn scan_string(&mut self) -> Result<(), ScanError> {
+        let mut clean_string = String::new();
         self.scan_char()?;
         while let Some(ch) = self.current_char {
             match ch {
                 '"' => {
                     self.scan_char()?;
-                    return self.finish_token(TokenKind::String);
+                    return self.finish_token_with_text(TokenKind::String, Some(clean_string));
                 }
                 '\\' => {
                     self.scan_char()?;
                     match self.current_char {
-                        Some(ch) if "nrtb".contains(ch) => {
-                        self.scan_char()?
+                        Some(ch) if "nrt\\".contains(ch) => {
+                            match ch {
+                                'n' => clean_string.push('\n'),
+                                'r' => clean_string.push('\r'),
+                                't' => clean_string.push('\t'),
+                                '\\' => clean_string.push('\\'),
+                                _ => unreachable!(),
+                            }
+                            self.scan_char()?
                         }
-                        Some(_) => return Err(ScanError::UnexpectedCharacterInEscapeSequence{offset: self.position, unexpected: ch}),
-                        None => return Err(ScanError::UnexpectedEndOfInputInEscapeSequence{offset: self.position}),
+                        Some(_) => {
+                            return Err(ScanError::UnexpectedCharacterInEscapeSequence {
+                                offset: self.position,
+                                unexpected: ch,
+                            })
+                        }
+                        None => {
+                            return Err(ScanError::UnexpectedEndOfInputInEscapeSequence {
+                                offset: self.position,
+                            })
+                        }
                     }
                 }
                 _ => {
+                    clean_string.push(ch);
                     self.scan_char()?;
                 }
             }
@@ -196,12 +240,16 @@ impl<'src> Scanner<'src> {
         self.token.start = self.position;
         if let Some(ch) = self.current_char {
             match ch {
-                'a'..='z' | 'A'..='Z' | '_' => return self.scan_identifier(),
+                'a'..='z' | 'A'..='Z' | '_' => return self.scan_identifier_or_keyword(),
                 '0'..='9' => return self.scan_number(),
                 ':' => return self.maybe_double_symbol(':', Symbol::Colon, Symbol::DoubleColon),
                 '=' => return self.maybe_double_symbol('=', Symbol::Eq, Symbol::EqEq),
                 ';' => return self.single_symbol(Symbol::Semicolon),
                 ',' => return self.single_symbol(Symbol::Comma),
+                '.' => return self.single_symbol(Symbol::Dot),
+                '+' => return self.single_symbol(Symbol::Plus),
+                '-' => return self.maybe_double_symbol('>', Symbol::Minus, Symbol::Arrow),
+                '\\' => return self.single_symbol(Symbol::Backslash),
                 '"' => return self.scan_string(),
                 _ => {
                     return Err(ScanError::UnexpectedCharacter {
@@ -217,5 +265,214 @@ impl<'src> Scanner<'src> {
 
     pub fn token(&self) -> &Token<'src> {
         &self.token
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    fn run(input: &str) -> Result<Vec<Token>, ScanError> {
+        let mut scanner = Scanner::new(input)?;
+        let mut output = Vec::new();
+        loop {
+            output.push(scanner.token().clone());
+            if scanner.token().kind() == TokenKind::Eof {
+                break;
+            }
+            scanner.scan()?;
+        }
+        Ok(output)
+    }
+
+    #[test]
+    fn whitespace() {
+        let ts = run("\t\n\rx").expect("scanning example input");
+        assert_eq!(ts[0].kind(), TokenKind::Identifier);
+        assert_eq!(ts[0].text(), "x");
+        assert_eq!(ts[0].raw_text(), "x");
+        assert_eq!(ts[0].start(), 3);
+        assert_eq!(ts[0].end(), 4);
+
+        assert_eq!(ts[1].kind(), TokenKind::Eof);
+        assert_eq!(ts[1].text(), "");
+        assert_eq!(ts[1].raw_text(), "");
+        assert_eq!(ts[1].start(), 4);
+        assert_eq!(ts[1].end(), 4);
+    }
+
+    #[test]
+    fn numbers() {
+        let ts = run("1").expect("scanning example input");
+        assert_eq!(ts[0].kind(), TokenKind::Number);
+        assert_eq!(ts[0].text(), "1");
+        assert_eq!(ts[0].raw_text(), "1");
+        assert_eq!(ts[0].start(), 0);
+        assert_eq!(ts[0].end(), 1);
+
+        let ts = run("1000").expect("scanning example input");
+        assert_eq!(ts[0].kind(), TokenKind::Number);
+        assert_eq!(ts[0].text(), "1000");
+        assert_eq!(ts[0].raw_text(), "1000");
+        assert_eq!(ts[0].start(), 0);
+        assert_eq!(ts[0].end(), 4);
+
+        let ts = run("9999").expect("scanning example input");
+        assert_eq!(ts[0].kind(), TokenKind::Number);
+        assert_eq!(ts[0].text(), "9999");
+        assert_eq!(ts[0].raw_text(), "9999");
+
+        let ts = run("1_000").expect("scanning example input");
+        assert_eq!(ts[0].kind(), TokenKind::Number);
+        assert_eq!(ts[0].text(), "1000");
+        assert_eq!(ts[0].raw_text(), "1_000");
+        assert_eq!(ts[0].start(), 0);
+        assert_eq!(ts[0].end(), 5);
+
+        let ts = run("1_000_000_000_000_000").expect("scanning example input");
+        assert_eq!(ts[0].kind(), TokenKind::Number);
+        assert_eq!(ts[0].text(), "1000000000000000");
+        assert_eq!(ts[0].raw_text(), "1_000_000_000_000_000");
+    }
+
+    #[test]
+    fn identifiers() {
+        let ts = run("a").expect("scanning example input");
+        assert_eq!(ts[0].kind(), TokenKind::Identifier);
+        assert_eq!(ts[0].text(), "a");
+        assert_eq!(ts[0].raw_text(), "a");
+        assert_eq!(ts[0].start(), 0);
+        assert_eq!(ts[0].end(), 1);
+
+        let ts = run("abc").expect("scanning example input");
+        assert_eq!(ts[0].kind(), TokenKind::Identifier);
+        assert_eq!(ts[0].text(), "abc");
+        assert_eq!(ts[0].raw_text(), "abc");
+
+        let ts = run("_").expect("scanning example input");
+        assert_eq!(ts[0].kind(), TokenKind::Identifier);
+        assert_eq!(ts[0].text(), "_");
+        assert_eq!(ts[0].raw_text(), "_");
+
+        let ts = run("a_1").expect("scanning example input");
+        assert_eq!(ts[0].kind(), TokenKind::Identifier);
+        assert_eq!(ts[0].text(), "a_1");
+        assert_eq!(ts[0].raw_text(), "a_1");
+
+        let ts = run("_1").expect("scanning example input");
+        assert_eq!(ts[0].kind(), TokenKind::Identifier);
+        assert_eq!(ts[0].text(), "_1");
+        assert_eq!(ts[0].raw_text(), "_1");
+
+        let ts =
+            run("asdfadsdflHJLHLadfJHJH__AS777SDHJ456789LH_1").expect("scanning example input");
+        assert_eq!(ts[0].kind(), TokenKind::Identifier);
+        assert_eq!(ts[0].text(), "asdfadsdflHJLHLadfJHJH__AS777SDHJ456789LH_1");
+        assert_eq!(
+            ts[0].raw_text(),
+            "asdfadsdflHJLHLadfJHJH__AS777SDHJ456789LH_1"
+        );
+        assert_eq!(ts[0].start(), 0);
+        assert_eq!(ts[0].end(), 43);
+    }
+
+    #[test]
+    fn symbols() {
+        let ts = run("; :: : = == , \\").expect("scanning example input");
+        assert_eq!(ts[0].kind(), TokenKind::Symbol(Symbol::Semicolon));
+        assert_eq!(ts[0].text(), ";");
+        assert_eq!(ts[0].raw_text(), ";");
+        assert_eq!(ts[0].start(), 0);
+        assert_eq!(ts[0].end(), 1);
+
+        assert_eq!(ts[1].kind(), TokenKind::Symbol(Symbol::DoubleColon));
+        assert_eq!(ts[1].text(), "::");
+        assert_eq!(ts[1].raw_text(), "::");
+        assert_eq!(ts[1].start(), 2);
+        assert_eq!(ts[1].end(), 4);
+
+        assert_eq!(ts[2].kind(), TokenKind::Symbol(Symbol::Colon));
+        assert_eq!(ts[2].text(), ":");
+        assert_eq!(ts[2].raw_text(), ":");
+        assert_eq!(ts[2].start(), 5);
+        assert_eq!(ts[2].end(), 6);
+
+        assert_eq!(ts[3].kind(), TokenKind::Symbol(Symbol::Eq));
+        assert_eq!(ts[3].text(), "=");
+        assert_eq!(ts[3].raw_text(), "=");
+        assert_eq!(ts[3].start(), 7);
+        assert_eq!(ts[3].end(), 8);
+
+        assert_eq!(ts[4].kind(), TokenKind::Symbol(Symbol::EqEq));
+        assert_eq!(ts[5].kind(), TokenKind::Symbol(Symbol::Comma));
+        assert_eq!(ts[6].kind(), TokenKind::Symbol(Symbol::Backslash));
+    }
+
+    #[test]
+    fn keywords() {
+        let ts = run("if end else fun ifthen funny").expect("scanning example input");
+        assert_eq!(ts[0].kind(), TokenKind::Keyword(Keyword::If));
+        assert_eq!(ts[0].text(), "if");
+        assert_eq!(ts[0].raw_text(), "if");
+        assert_eq!(ts[0].start(), 0);
+        assert_eq!(ts[0].end(), 2);
+
+        assert_eq!(ts[1].kind(), TokenKind::Keyword(Keyword::End));
+        assert_eq!(ts[1].text(), "end");
+        assert_eq!(ts[1].raw_text(), "end");
+        assert_eq!(ts[1].start(), 3);
+        assert_eq!(ts[1].end(), 6);
+
+        assert_eq!(ts[2].kind(), TokenKind::Keyword(Keyword::Else));
+        assert_eq!(ts[2].text(), "else");
+        assert_eq!(ts[2].raw_text(), "else");
+        assert_eq!(ts[2].start(), 7);
+        assert_eq!(ts[2].end(), 11);
+
+        assert_eq!(ts[3].kind(), TokenKind::Keyword(Keyword::Fun));
+        assert_eq!(ts[3].text(), "fun");
+        assert_eq!(ts[3].raw_text(), "fun");
+        assert_eq!(ts[3].start(), 12);
+        assert_eq!(ts[3].end(), 15);
+
+        assert_eq!(ts[4].kind(), TokenKind::Identifier);
+        assert_eq!(ts[4].text(), "ifthen");
+        assert_eq!(ts[4].raw_text(), "ifthen");
+        assert_eq!(ts[4].start(), 16);
+        assert_eq!(ts[4].end(), 22);
+
+        assert_eq!(ts[5].kind(), TokenKind::Identifier);
+        assert_eq!(ts[5].text(), "funny");
+        assert_eq!(ts[5].raw_text(), "funny");
+        assert_eq!(ts[5].start(), 23);
+        assert_eq!(ts[5].end(), 28);
+    }
+
+    #[test]
+    fn strings() {
+        let ts = run(r###""hello" "" "\r" "\\""###).expect("scanning example input");
+        assert_eq!(ts[0].kind(), TokenKind::String);
+        assert_eq!(ts[0].text(), "hello");
+        assert_eq!(ts[0].raw_text(), "\"hello\"");
+        assert_eq!(ts[0].start(), 0);
+        assert_eq!(ts[0].end(), 7);
+
+        assert_eq!(ts[1].kind(), TokenKind::String);
+        assert_eq!(ts[1].text(), "");
+        assert_eq!(ts[1].raw_text(), "\"\"");
+        assert_eq!(ts[1].start(), 8);
+        assert_eq!(ts[1].end(), 10);
+
+        assert_eq!(ts[2].kind(), TokenKind::String);
+        assert_eq!(ts[2].text(), "\r");
+        assert_eq!(ts[2].raw_text(), "\"\\r\"");
+        assert_eq!(ts[2].start(), 11);
+        assert_eq!(ts[2].end(), 15);
+
+        assert_eq!(ts[3].kind(), TokenKind::String);
+        assert_eq!(ts[3].text(), "\\");
+        assert_eq!(ts[3].raw_text(), "\"\\\\\"");
+        assert_eq!(ts[3].start(), 16);
+        assert_eq!(ts[3].end(), 20);
     }
 }

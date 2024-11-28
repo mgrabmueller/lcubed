@@ -7,11 +7,13 @@ mod scanner;
 mod token;
 
 fn main() -> Result<(), Error> {
-    let input = r#"""main :: Integer;
+    let input = r#"main :: Integer;
      main = 1_000_000;
      test :: String;
-     test = "hallo world"
-     """#;
+     test = "hallo world";
+     id :: X -> X;
+     id = \ x. x;
+     "#;
     let mut scanner = Scanner::new(input)?;
     loop {
         println!("{:?}", scanner.token());

@@ -235,31 +235,53 @@ impl<'src> Scanner<'src> {
         })
     }
 
-    pub fn scan(&mut self) -> Result<(), ScanError> {
-        self.skip_whitespace()?;
-        self.token.start = self.position;
-        if let Some(ch) = self.current_char {
-            match ch {
-                'a'..='z' | 'A'..='Z' | '_' => return self.scan_identifier_or_keyword(),
-                '0'..='9' => return self.scan_number(),
-                ':' => return self.maybe_double_symbol(':', Symbol::Colon, Symbol::DoubleColon),
-                '=' => return self.maybe_double_symbol('=', Symbol::Eq, Symbol::EqEq),
-                ';' => return self.single_symbol(Symbol::Semicolon),
-                ',' => return self.single_symbol(Symbol::Comma),
-                '.' => return self.single_symbol(Symbol::Dot),
-                '+' => return self.single_symbol(Symbol::Plus),
-                '-' => return self.maybe_double_symbol('>', Symbol::Minus, Symbol::Arrow),
-                '\\' => return self.single_symbol(Symbol::Backslash),
-                '"' => return self.scan_string(),
-                _ => {
-                    return Err(ScanError::UnexpectedCharacter {
-                        offset: self.position,
-                        unexpected: ch,
-                    })
-                }
+    fn skip_line_comment(&mut self) -> Result<(), ScanError> {
+        while let Some(ch) = self.current_char {
+            if ch == '\n' {
+                return self.scan_char();
             }
-        } else {
-            return self.finish_token(TokenKind::Eof);
+            self.scan_char()?;
+        }
+        Ok(())
+    }
+
+    pub fn scan(&mut self) -> Result<(), ScanError> {
+        loop {
+            self.skip_whitespace()?;
+            self.token.start = self.position;
+            if let Some(ch) = self.current_char {
+                match ch {
+                    '/' => {
+                        self.scan_char()?;
+                        match self.current_char {
+                            Some('/') => self.skip_line_comment()?,
+                            _ => return self.finish_token(TokenKind::Symbol(Symbol::Slash)),
+                        }
+                    }
+                    'a'..='z' | 'A'..='Z' | '_' => return self.scan_identifier_or_keyword(),
+                    '0'..='9' => return self.scan_number(),
+                    ':' => {
+                        return self.maybe_double_symbol(':', Symbol::Colon, Symbol::DoubleColon)
+                    }
+                    '=' => return self.maybe_double_symbol('=', Symbol::Eq, Symbol::EqEq),
+                    ';' => return self.single_symbol(Symbol::Semicolon),
+                    ',' => return self.single_symbol(Symbol::Comma),
+                    '.' => return self.single_symbol(Symbol::Dot),
+                    '+' => return self.single_symbol(Symbol::Plus),
+                    '*' => return self.single_symbol(Symbol::Star),
+                    '-' => return self.maybe_double_symbol('>', Symbol::Minus, Symbol::Arrow),
+                    '\\' => return self.single_symbol(Symbol::Backslash),
+                    '"' => return self.scan_string(),
+                    _ => {
+                        return Err(ScanError::UnexpectedCharacter {
+                            offset: self.position,
+                            unexpected: ch,
+                        })
+                    }
+                }
+            } else {
+                return self.finish_token(TokenKind::Eof);
+            }
         }
     }
 

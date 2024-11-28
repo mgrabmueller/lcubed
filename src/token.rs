@@ -13,6 +13,8 @@ pub enum Symbol {
     Dot,
     Plus,
     Minus,
+    Slash,
+    Star,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]

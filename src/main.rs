@@ -13,6 +13,10 @@ fn main() -> Result<(), Error> {
      test = "hallo world";
      id :: X -> X;
      id = \ x. x;
+     before
+     // blub.
+     middle // blob
+     after
      "#;
     let mut scanner = Scanner::new(input)?;
     loop {

@@ -12,6 +12,8 @@ pub enum ScanError {
     UnexpectedEndOfInputInEscapeSequence { offset: usize },
 }
 
+impl std::error::Error for ScanError {}
+
 impl std::fmt::Display for ScanError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -53,6 +55,10 @@ pub struct Scanner<'src> {
 }
 
 impl<'src> Scanner<'src> {
+    /// Create a new scanner that will tokenize the given string.
+    ///
+    /// # Errors
+    /// Returns an error if the string does not start with a valid token.
     pub fn new(input: &'src str) -> Result<Scanner<'src>, ScanError> {
         let mut scanner = Scanner {
             input,
@@ -67,6 +73,7 @@ impl<'src> Scanner<'src> {
         Ok(scanner)
     }
 
+    /// Move the scanner to the next character.
     fn scan_char(&mut self) -> Result<(), ScanError> {
         if let Some((ofs, ch)) = self.chars.next() {
             self.last_char = self.current_char;
@@ -79,6 +86,7 @@ impl<'src> Scanner<'src> {
         Ok(())
     }
 
+    /// Move the scanner to the next non-whitespace character.
     fn skip_whitespace(&mut self) -> Result<(), ScanError> {
         while let Some(ch) = self.current_char {
             if !ch.is_whitespace() {
@@ -89,6 +97,8 @@ impl<'src> Scanner<'src> {
         Ok(())
     }
 
+    /// Set the kind and end position, and the text/raw text fields of
+    /// the token to the scanned porition of the input.
     fn finish_token(&mut self, kind: TokenKind) -> Result<(), ScanError> {
         self.token.kind = kind;
         self.token.end = self.position;
@@ -97,24 +107,16 @@ impl<'src> Scanner<'src> {
         Ok(())
     }
 
+    /// Set the kind and end position, and the text/raw text fields of
+    /// the token to the scanned porition of the input. Before returning, calls
+    /// the given modifier function on the token, which might do some
+    /// post-processing.
     fn finish_token_with<F>(&mut self, kind: TokenKind, modifier: F) -> Result<(), ScanError>
     where
         F: Fn(&mut Token) -> Result<(), ScanError>,
     {
         self.finish_token(kind)?;
         modifier(&mut self.token)
-    }
-
-    fn finish_token_with_text(
-        &mut self,
-        kind: TokenKind,
-        text: Option<String>,
-    ) -> Result<(), ScanError> {
-        self.finish_token(kind)?;
-        if let Some(s) = text {
-            self.token.text = Cow::from(s);
-        }
-        Ok(())
     }
 
     fn scan_identifier_or_keyword(&mut self) -> Result<(), ScanError> {
@@ -146,17 +148,6 @@ impl<'src> Scanner<'src> {
     }
 
     fn scan_number(&mut self) -> Result<(), ScanError> {
-        self.scan_char()?;
-        while let Some(ch) = self.current_char {
-            match ch {
-                '0'..='9' | '_' => {
-                    self.scan_char()?;
-                }
-                _ => {
-                    return self.finish_token(TokenKind::Number);
-                }
-            }
-        }
         fn cleanup_number(token: &mut Token) -> Result<(), ScanError> {
             let s = token
                 .raw_text
@@ -166,6 +157,18 @@ impl<'src> Scanner<'src> {
             token.text = s.into();
             Ok(())
         }
+                self.scan_char()?;
+        while let Some(ch) = self.current_char {
+            match ch {
+                '0'..='9' | '_' => {
+                    self.scan_char()?;
+                }
+                _ => {
+                    return self.finish_token_with(TokenKind::Number, cleanup_number);
+                }
+            }
+        }
+        
         self.finish_token_with(TokenKind::Number, cleanup_number)
     }
 
@@ -188,26 +191,53 @@ impl<'src> Scanner<'src> {
         }
     }
 
+    fn current_text(&self) -> &'src str {
+        &self.input[self.token.start..self.position]
+    }
+
     fn scan_string(&mut self) -> Result<(), ScanError> {
-        let mut clean_string = String::new();
+        let mut clean_string = None;
         self.scan_char()?;
         while let Some(ch) = self.current_char {
             match ch {
                 '"' => {
                     self.scan_char()?;
-                    return self.finish_token_with_text(TokenKind::String, Some(clean_string));
+                    let text = if let Some(cs) = clean_string {
+                        Cow::from(cs)
+                    } else {
+                        let ct = self.current_text();
+                        // UTF-8 length of character '"' is always 1, so this trims
+                        // off the quotes at both ends.
+                        Cow::from(&ct[1..ct.len() - 1])
+                    };
+                    // return self.finish_token_with_text(TokenKind::String, Some(text));
+                    self.finish_token(TokenKind::String)?;
+                    self.token.text = text;
+                    return Ok(());
                 }
                 '\\' => {
                     self.scan_char()?;
                     match self.current_char {
-                        Some(ch) if "nrt\\".contains(ch) => {
+                        Some(ch) if "nrt\\\"'".contains(ch) => {
+                            let mut s = match clean_string.take() {
+                                None => {
+                                    let ct = self.current_text();
+                                    // trim off quote at the start and the backslash that 
+                                    // introduced the current escape sequence.
+                                    ct[1..ct.len() - 1].to_string()
+                                }
+                                Some(s) => s,
+                            };
                             match ch {
-                                'n' => clean_string.push('\n'),
-                                'r' => clean_string.push('\r'),
-                                't' => clean_string.push('\t'),
-                                '\\' => clean_string.push('\\'),
+                                'n' => s.push('\n'),
+                                'r' => s.push('\r'),
+                                't' => s.push('\t'),
+                                '\\' => s.push('\\'),
+                                '"' => s.push('"'),
+                                '\'' => s.push('\''),
                                 _ => unreachable!(),
                             }
+                            clean_string = Some(s);
                             self.scan_char()?
                         }
                         Some(_) => {
@@ -224,7 +254,9 @@ impl<'src> Scanner<'src> {
                     }
                 }
                 _ => {
-                    clean_string.push(ch);
+                    if let Some(s) = &mut clean_string {
+                        s.push(ch);
+                    }
                     self.scan_char()?;
                 }
             }
@@ -245,6 +277,7 @@ impl<'src> Scanner<'src> {
         Ok(())
     }
 
+    /// Advance the scanner to the next token, skipping over whitespace and comments.
     pub fn scan(&mut self) -> Result<(), ScanError> {
         loop {
             self.skip_whitespace()?;
@@ -355,6 +388,14 @@ mod test {
         assert_eq!(ts[0].kind(), TokenKind::Number);
         assert_eq!(ts[0].text(), "1000000000000000");
         assert_eq!(ts[0].raw_text(), "1_000_000_000_000_000");
+
+        // Ensure number is parsed correctly if not at end of input.
+        let ts = run("1_000  x").expect("scanning example input");
+        assert_eq!(ts[0].kind(), TokenKind::Number);
+        assert_eq!(ts[0].text(), "1000");
+        assert_eq!(ts[0].raw_text(), "1_000");
+        assert_eq!(ts[0].start(), 0);
+        assert_eq!(ts[0].end(), 5);
     }
 
     #[test]
@@ -396,6 +437,12 @@ mod test {
         );
         assert_eq!(ts[0].start(), 0);
         assert_eq!(ts[0].end(), 43);
+
+        // Ensure correct scanning if not at end of input.
+        let ts = run("a_1 x").expect("scanning example input");
+        assert_eq!(ts[0].kind(), TokenKind::Identifier);
+        assert_eq!(ts[0].text(), "a_1");
+        assert_eq!(ts[0].raw_text(), "a_1");
     }
 
     #[test]
@@ -496,5 +543,26 @@ mod test {
         assert_eq!(ts[3].raw_text(), "\"\\\\\"");
         assert_eq!(ts[3].start(), 16);
         assert_eq!(ts[3].end(), 20);
+    }
+
+    #[test]
+    fn comments() {
+        let ts = run(r###"hello
+        // line comment
+        world
+        // another one at the end (no newline)"###)
+        .expect("scanning example input");
+
+        assert_eq!(ts[0].kind(), TokenKind::Identifier);
+        assert_eq!(ts[0].text(), "hello");
+        assert_eq!(ts[0].raw_text(), "hello");
+        assert_eq!(ts[0].start(), 0);
+        assert_eq!(ts[0].end(), 5);
+
+        assert_eq!(ts[1].kind(), TokenKind::Identifier);
+        assert_eq!(ts[1].text(), "world");
+        assert_eq!(ts[1].raw_text(), "world");
+        assert_eq!(ts[1].start(), 38);
+        assert_eq!(ts[1].end(), 43);
     }
 }

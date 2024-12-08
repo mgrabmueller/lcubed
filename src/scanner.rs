@@ -240,7 +240,7 @@ impl<'src> Scanner<'src> {
                             clean_string = Some(s);
                             self.scan_char()?
                         }
-                        Some(_) => {
+                        Some(ch) => {
                             return Err(ScanError::UnexpectedCharacterInEscapeSequence {
                                 offset: self.position,
                                 unexpected: ch,
@@ -543,6 +543,16 @@ mod test {
         assert_eq!(ts[3].raw_text(), "\"\\\\\"");
         assert_eq!(ts[3].start(), 16);
         assert_eq!(ts[3].end(), 20);
+    }
+
+    #[test]
+    fn strings_errors() {
+        let e = run(r#"""#).expect_err("should fail");
+        assert!(matches!(e, ScanError::UnexpectedEndOfInputInString { string_start: 0, offset: 1 }));
+        let e = run(r#""H\ello""#).expect_err("should fail");
+        assert!(matches!(e, ScanError::UnexpectedCharacterInEscapeSequence { offset: 3, unexpected: 'e' }));
+        let e = run(r#""H\"#).expect_err("should fail");
+        assert!(matches!(e, ScanError::UnexpectedEndOfInputInEscapeSequence { offset: 3 }));
     }
 
     #[test]
